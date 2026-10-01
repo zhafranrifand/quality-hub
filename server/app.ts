@@ -583,6 +583,7 @@ export function createApp(config: AppConfig) {
               id: id(),
               projectId: plan.projectId,
               key: scenario.key,
+              browser: body.browser,
               caseId: testCase.id,
               preserveManualSteps: !!scenario.legacyCaseId,
               createdAt: Date.now(),

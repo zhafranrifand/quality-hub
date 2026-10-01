@@ -180,12 +180,12 @@ describe("private workspace API", () => {
         .prepare("PRAGMA table_info(automation_sources)")
         .all()
         .map((column: any) => column.name);
-      expect(sourceColumns).not.toContain("browser");
+      expect(sourceColumns).toContain("browser");
       expect(
         legacyDb
-          .prepare("SELECT id,caseId FROM automation_sources WHERE id='source'")
+          .prepare("SELECT id,browser,caseId FROM automation_sources WHERE id='source'")
           .get(),
-      ).toEqual({ id: "source", caseId: "case" });
+      ).toEqual({ id: "source", browser: "firefox", caseId: "case" });
     } finally {
       legacyDb.close();
     }
@@ -797,7 +797,7 @@ describe("private workspace API", () => {
       app.db
         .all("PRAGMA table_info(automation_sources)")
         .map((column: any) => column.name),
-    ).not.toContain("browser");
+    ).toContain("browser");
   });
   it("rejects runner creation and reused-run preflight before creating a run when a key is draft", async () => {
     const base = await setup();

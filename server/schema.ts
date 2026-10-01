@@ -220,6 +220,9 @@ export const automationSources = sqliteTable(
       .notNull()
       .references(() => projects.id),
     key: text().notNull(),
+    // Retained for compatibility with older source mappings; plan targets now
+    // determine the browser used for execution.
+    browser: text().notNull(),
     caseId: text()
       .notNull()
       .references(() => cases.id),
