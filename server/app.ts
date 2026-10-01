@@ -17,6 +17,10 @@ import {
   nameSchema,
   statusSchema,
   idSchema,
+  automationRunRequestSchema,
+  automationPreflightRequestSchema,
+  automationSyncRequestSchema,
+  caseVersionSchema,
 } from "../shared/contracts.js";
 import { digest, secret, verifyPassword, cookieToken } from "./auth.js";
 import { parseReport } from "./playwright.js";
@@ -28,6 +32,7 @@ import {
   createBackup,
   backupRunning,
 } from "./storage.js";
+import { loadGithubManifest, type GithubSourceConfig } from "./github-source.js";
 
 export class HttpError extends Error {
   constructor(
@@ -53,6 +58,7 @@ export type AppConfig = {
   publicOrigin?: string;
   production?: boolean;
   quiet?: boolean;
+  githubSource?: GithubSourceConfig;
 };
 export function createApp(config: AppConfig) {
   const db = openStore(config.dataDir),
@@ -113,6 +119,12 @@ export function createApp(config: AppConfig) {
     legacyHeaders: false,
     skipSuccessfulRequests: true,
   });
+  const githubManifestLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
   api.post("/auth/login", loginLimit, (req, res) => {
     if (req.headers.origin && req.headers.origin !== origin)
       fail(403, "Invalid origin");
@@ -150,19 +162,146 @@ export function createApp(config: AppConfig) {
       : null;
     if (bearer) {
       const token = db.one(
-        "SELECT id FROM tokens WHERE hash=?",
+        "SELECT id,planId,scope FROM tokens WHERE hash=?",
         digest(bearer),
       );
-      if (!token) fail(401, "Invalid or revoked upload token");
+      if (!token) fail(401, "Invalid or revoked API token");
+      const tokenScope =
+        (token.scope as string | undefined) ||
+        (token.planId ? "runner" : "upload");
+      const scopedPlanId = token.planId as string | null;
+      const scopedProject = scopedPlanId
+        ? db.one(
+            `SELECT rel.projectId FROM plans p
+             JOIN releases rel ON rel.id=p.releaseId WHERE p.id=?`,
+            scopedPlanId,
+          )
+        : null;
+      const projectPath = req.path.match(/^\/projects\/([^/]+)\/(builds|state|dashboard)$/);
+      const projectPathAllowed =
+        !!projectPath &&
+        projectPath[1] === scopedProject?.projectId &&
+        (projectPath[2] !== "dashboard" ||
+          typeof req.query.releaseId !== "string" ||
+          !!db.one(
+            "SELECT id FROM releases WHERE id=? AND projectId=?",
+            req.query.releaseId,
+            scopedProject.projectId,
+          ));
+      const caseVersionsPath = req.path.match(/^\/cases\/([^/]+)\/versions$/);
+      const runPath = req.path.match(/^\/runs\/([^/]+)$/);
+      const defectPath = req.path.match(/^\/defects\/([^/]+)$/);
+      const evidencePath = req.path.match(/^\/evidence\/([^/]+)\/file$/);
+      const readinessPath = req.path.match(/^\/releases\/([^/]+)\/readiness$/);
+      const canReadScopedData =
+        ["GET", "HEAD"].includes(req.method) &&
+        !!scopedPlanId &&
+        !!scopedProject &&
+        (req.path === "/plans" ||
+          req.path === "/projects" ||
+          projectPathAllowed ||
+          (!!caseVersionsPath &&
+            db.one(
+              "SELECT id FROM cases WHERE id=? AND projectId=?",
+              caseVersionsPath[1],
+              scopedProject.projectId,
+            )) ||
+          (!!runPath &&
+            db.one(
+              "SELECT id FROM runs WHERE id=? AND planId=?",
+              runPath[1],
+              scopedPlanId,
+            )) ||
+          (!!defectPath &&
+            db.one(
+              `SELECT d.id FROM defects d
+               JOIN releases rel ON rel.id=d.releaseId
+               WHERE d.id=? AND rel.projectId=?`,
+              defectPath[1],
+              scopedProject.projectId,
+            )) ||
+          (!!evidencePath &&
+            db.one(
+              `SELECT e.id FROM evidence e
+               JOIN executions x ON x.id=e.executionId
+               JOIN runs r ON r.id=x.runId
+               WHERE e.id=? AND r.planId=?`,
+              evidencePath[1],
+              scopedPlanId,
+            )) ||
+          (!!readinessPath &&
+            db.one(
+              "SELECT id FROM releases WHERE id=? AND projectId=?",
+              readinessPath[1],
+              scopedProject.projectId,
+            )));
+      const canRead =
+        ["read_only", "edit"].includes(tokenScope) && canReadScopedData;
+      const runCreation = req.path.match(/^\/plans\/([^/]+)\/runs$/);
+      const automationSync = req.path.match(
+        /^\/plans\/([^/]+)\/automation\/sync$/,
+      );
+      const automationPreflight = req.path.match(
+        /^\/plans\/([^/]+)\/automation\/preflight$/,
+      );
+      const reportImport = req.path.match(
+        /^\/runs\/([^/]+)\/imports\/playwright$/,
+      );
+      const evidenceUpload = req.path.match(
+        /^\/executions\/([^/]+)\/evidence$/,
+      );
+      const canCreateRun =
+        ["edit", "runner"].includes(tokenScope) &&
+        req.method === "POST" &&
+        !!scopedPlanId &&
+        runCreation?.[1] === scopedPlanId;
+      const canSyncAutomation =
+        ["edit", "automation_sync"].includes(tokenScope) &&
+        req.method === "POST" &&
+        !!scopedPlanId &&
+        automationSync?.[1] === scopedPlanId;
+      const canPreflightAutomation =
+        ["edit", "runner"].includes(tokenScope) &&
+        req.method === "POST" &&
+        !!scopedPlanId &&
+        automationPreflight?.[1] === scopedPlanId;
+      const canImportReport =
+        ["edit", "runner", "upload"].includes(tokenScope) &&
+        req.method === "POST" &&
+        !!reportImport &&
+        !!scopedPlanId &&
+        db.one(
+          "SELECT id FROM runs WHERE id=? AND planId=?",
+          reportImport[1],
+          scopedPlanId,
+        );
+      const canUploadEvidence =
+        ["edit", "runner", "upload"].includes(tokenScope) &&
+        req.method === "POST" &&
+        !!evidenceUpload &&
+        !!scopedPlanId &&
+        db.one(
+          "SELECT e.id FROM executions e JOIN runs r ON r.id=e.runId WHERE e.id=? AND r.planId=?",
+          evidenceUpload[1],
+          scopedPlanId,
+        );
       if (
-        req.method !== "POST" ||
-        !(
-          /^\/runs\/[^/]+\/imports\/playwright$/.test(req.path) ||
-          /^\/executions\/[^/]+\/evidence$/.test(req.path)
-        )
+        !canRead &&
+        !canCreateRun &&
+        !canSyncAutomation &&
+        !canPreflightAutomation &&
+        !canImportReport &&
+        !canUploadEvidence
       )
-        fail(403, "Upload tokens can only submit reports and screenshots");
+        fail(403, "Token scope does not authorize this operation");
+      if (canRead && req.path === "/plans")
+        res.locals.apiTokenReadPlanId = scopedPlanId;
+      if (canRead && req.path === "/projects")
+        res.locals.apiTokenReadProjectId = scopedProject.projectId;
       res.locals.uploadToken = true;
+      res.locals.uploadTokenPlanId = scopedPlanId;
+      res.locals.tokenScope = tokenScope;
+      res.locals.apiToken = true;
       return next();
     }
     const session = db.one(
@@ -202,6 +341,109 @@ export function createApp(config: AppConfig) {
       "SELECT r.*,p.releaseId,rel.projectId FROM runs r JOIN plans p ON p.id=r.planId JOIN releases rel ON rel.id=p.releaseId WHERE r.id=?",
       runId,
     ) || fail(404, "Run not found");
+  const automationAssessment = (
+    planId: string,
+    projectId: string,
+    key: string,
+    browser: string,
+  ) => {
+    const source = db.one(
+      "SELECT s.caseId,c.status FROM automation_sources s JOIN cases c ON c.id=s.caseId WHERE s.projectId=? AND s.key=?",
+      projectId,
+      key,
+    );
+    if (!source)
+      return {
+        key,
+        caseId: null,
+        versionId: null,
+        status: "missing" as const,
+        planned: false,
+        ready: false,
+        reason: "Scenario key has not been synced",
+      };
+    const latest = db.one(
+      "SELECT id,approved FROM versions WHERE caseId=? ORDER BY number DESC LIMIT 1",
+      source.caseId,
+    );
+    const planned = db.one(
+      `SELECT i.versionId FROM plan_items i
+       JOIN versions v ON v.id=i.versionId
+       WHERE i.planId=? AND v.caseId=? AND i.browser=? LIMIT 1`,
+      planId,
+      source.caseId,
+      browser,
+    );
+    const matchCounts = db.one(
+      `SELECT count(*) AS candidates,
+              sum(CASE WHEN i.versionId=? THEN 1 ELSE 0 END) AS latestMatches
+       FROM plan_items i JOIN versions v ON v.id=i.versionId
+       WHERE i.planId=? AND v.caseId=? AND i.browser=?`,
+      latest?.id || "",
+      planId,
+      source.caseId,
+      browser,
+    );
+    const ambiguous = matchCounts.candidates > 1;
+    const ready =
+      !!latest &&
+      !!latest.approved &&
+      source.status === "approved" &&
+      matchCounts.candidates === 1 &&
+      matchCounts.latestMatches === 1;
+    return {
+      key,
+      caseId: source.caseId,
+      versionId: latest?.id || null,
+      status: source.status,
+      planned: !!planned,
+      ready,
+      reason: ready
+        ? null
+        : source.status === "deprecated"
+          ? "Case is deprecated; restore or duplicate it in Quality Hub before syncing"
+          : source.status !== "approved" || !latest?.approved
+          ? "Latest case version requires approval"
+          : ambiguous
+            ? "Multiple planned environment combinations match this case and browser; keep one to make import unambiguous"
+            : "Latest approved version is not in this plan for the requested browser",
+    };
+  };
+  const latestAutomationChecks = (
+    planId: string,
+    keys: string[],
+    browser: string,
+  ) => {
+    const plan = db.one(
+      `SELECT rel.projectId FROM plans p
+       JOIN releases rel ON rel.id=p.releaseId WHERE p.id=?`,
+      planId,
+    );
+    if (!plan) fail(404, "Plan not found");
+    return keys.map((key) => {
+      const source = db.one(
+        "SELECT caseId FROM automation_sources WHERE projectId=? AND key=?",
+        plan.projectId,
+        key,
+      );
+      if (!source)
+        return {
+          key,
+          caseId: null,
+          versionId: null,
+          status: "missing",
+          planned: false,
+          ready: false,
+          reason: "Scenario key has not been synced",
+        };
+      return automationAssessment(
+        planId,
+        plan.projectId,
+        key,
+        browser,
+      );
+    });
+  };
   const executionContext = (executionId: string) => {
     const ex = must("executions", executionId);
     return { ex, run: runContext(ex.runId) };
@@ -230,8 +472,237 @@ export function createApp(config: AppConfig) {
     return { ...must("cases", caseId), versionId, ...content };
   };
   api.get("/projects", (_req, res) =>
-    res.json(db.all("SELECT * FROM projects ORDER BY createdAt,id")),
+    res.json(
+      res.locals.apiTokenReadProjectId
+        ? db.all(
+            "SELECT * FROM projects WHERE id=? ORDER BY createdAt,id",
+            res.locals.apiTokenReadProjectId,
+          )
+        : db.all("SELECT * FROM projects ORDER BY createdAt,id"),
+    ),
   );
+  api.get("/plans", (_req, res) =>
+    res.json(
+      res.locals.apiTokenReadPlanId
+        ? db.all(
+            `SELECT p.id,p.name,p.releaseId,r.name AS releaseName,
+                    r.projectId,pr.name AS projectName
+             FROM plans p
+             JOIN releases r ON r.id=p.releaseId
+             JOIN projects pr ON pr.id=r.projectId
+             WHERE p.id=? ORDER BY pr.name,r.createdAt DESC,p.name`,
+            res.locals.apiTokenReadPlanId,
+          )
+        : db.all(
+            `SELECT p.id,p.name,p.releaseId,r.name AS releaseName,
+                    r.projectId,pr.name AS projectName
+             FROM plans p
+             JOIN releases r ON r.id=p.releaseId
+             JOIN projects pr ON pr.id=r.projectId
+             ORDER BY pr.name,r.createdAt DESC,p.name`,
+          ),
+    ),
+  );
+  api.post("/plans/:id/automation/sync", (req, res) => {
+    const planId = param(req),
+      plan = db.one(
+        `SELECT rel.projectId FROM plans p
+         JOIN releases rel ON rel.id=p.releaseId WHERE p.id=?`,
+        planId,
+      );
+    if (!plan) fail(404, "Plan not found");
+    if (
+      res.locals.uploadToken &&
+      (!["automation_sync", "edit"].includes(res.locals.tokenScope) ||
+        res.locals.uploadTokenPlanId !== planId)
+    )
+      fail(403, "Use an Edit token bound to this plan");
+    const body = automationSyncRequestSchema.parse(req.body);
+    const normalizedScenarios = body.scenarios.map((scenario) => ({
+      ...scenario,
+      tags: [...new Set(scenario.tags)].sort(),
+    }));
+
+    db.sqlite
+      .transaction(() => {
+        for (const scenario of normalizedScenarios) {
+          let source = db.one(
+            "SELECT * FROM automation_sources WHERE projectId=? AND key=?",
+            plan.projectId,
+            scenario.key,
+          );
+          let testCase: any;
+          let created = false;
+          if (source) {
+            testCase = db.one(
+              "SELECT * FROM cases WHERE id=? AND projectId=?",
+              source.caseId,
+              plan.projectId,
+            );
+            if (testCase.status === "deprecated")
+              fail(
+                409,
+                `Deprecated case ${testCase.id} cannot be synchronized; restore or duplicate it in Quality Hub`,
+              );
+            if (
+              scenario.legacyCaseId &&
+              scenario.legacyCaseId.toUpperCase() !== testCase.id.toUpperCase()
+            )
+              fail(409, `Scenario key ${scenario.key} is already linked to another case`);
+          } else {
+            if (scenario.legacyCaseId) {
+              testCase = db.one(
+                "SELECT * FROM cases WHERE id=? COLLATE NOCASE AND projectId=?",
+                scenario.legacyCaseId,
+                plan.projectId,
+              );
+              if (!testCase)
+                fail(
+                  400,
+                  `Legacy case ${scenario.legacyCaseId} does not exist in this project`,
+                );
+              if (testCase.status === "deprecated")
+                fail(409, `Deprecated case ${scenario.legacyCaseId} cannot be linked`);
+              const linked = db.one(
+                "SELECT key FROM automation_sources WHERE caseId=?",
+                testCase.id,
+              );
+              if (linked)
+                fail(409, `Case ${testCase.id} is already linked to scenario key ${linked.key}`);
+            } else {
+              testCase = {
+                id: `TC-${id().slice(0, 8).toUpperCase()}`,
+                projectId: plan.projectId,
+                status: "draft",
+                createdAt: Date.now(),
+              };
+              db.insert(t.cases, testCase);
+              created = true;
+            }
+            db.insert(t.automationSources, {
+              id: id(),
+              projectId: plan.projectId,
+              key: scenario.key,
+              caseId: testCase.id,
+              preserveManualSteps: !!scenario.legacyCaseId,
+              createdAt: Date.now(),
+            });
+            source = {
+              caseId: testCase.id,
+              preserveManualSteps: !!scenario.legacyCaseId,
+            };
+          }
+
+          const latest = db.one(
+            "SELECT id,number,content FROM versions WHERE caseId=? ORDER BY number DESC LIMIT 1",
+            testCase.id,
+          );
+          const previous = latest
+            ? caseVersionSchema.parse(JSON.parse(latest.content))
+            : null;
+          const preserveManualSteps = !!source?.preserveManualSteps;
+          const automationSource = {
+            key: scenario.key,
+            featurePath: scenario.featurePath,
+            gherkin: scenario.gherkin,
+            background: scenario.background,
+            steps: scenario.steps,
+            tags: scenario.tags,
+          };
+          const nextContent = caseVersionSchema.parse({
+            title: scenario.title,
+            preconditions: preserveManualSteps
+              ? previous?.preconditions || ""
+              : scenario.background.join("\n"),
+            steps: preserveManualSteps
+              ? previous?.steps
+              : scenario.steps.map(({ keyword, text }) => ({
+                  action: `${keyword} ${text}`,
+                  expected: "",
+                })),
+            priority: previous?.priority || "medium",
+            component: previous?.component || "",
+            tags: preserveManualSteps
+              ? [...new Set([...(previous?.tags || []), ...scenario.tags])].sort()
+              : scenario.tags,
+            executionMode: preserveManualSteps
+              ? previous?.executionMode === "manual"
+                ? "both"
+                : previous?.executionMode || "both"
+              : "automated",
+            automationSource,
+          });
+          const previousContent = previous
+            ? JSON.stringify(previous)
+            : null;
+          const contentJson = JSON.stringify(nextContent);
+          const changed = previousContent !== contentJson;
+          if (changed) {
+            const versionId = id();
+            db.insert(t.versions, {
+              id: versionId,
+              caseId: testCase.id,
+              number: (latest?.number || 0) + 1,
+              content: contentJson,
+              createdAt: Date.now(),
+            });
+            db.run("UPDATE cases SET status='draft' WHERE id=?", testCase.id);
+            db.log(created ? "case.created" : "case.revised", testCase.id);
+          }
+        }
+      })
+      .immediate();
+
+    const scenarioResults = body.scenarios.map((scenario) =>
+      automationAssessment(planId, plan.projectId, scenario.key, body.browser),
+    );
+    res.json({
+      planId,
+      browser: body.browser,
+      ready: scenarioResults.every((scenario) => scenario.ready),
+      scenarios: scenarioResults,
+    });
+  });
+  api.post("/plans/:id/automation/preflight", (req, res) => {
+    const planId = param(req);
+    if (
+      res.locals.uploadToken &&
+      (!["runner", "edit"].includes(res.locals.tokenScope) ||
+        res.locals.uploadTokenPlanId !== planId)
+    )
+      fail(403, "Use an Edit token bound to this plan");
+    const body = automationPreflightRequestSchema.parse(req.body);
+    if (body.runId) {
+      const run = runContext(body.runId);
+      if (run.planId !== planId || run.kind !== "automated")
+        fail(409, "The existing run does not belong to this automated plan");
+      if (run.imported)
+        fail(409, "The existing run already has an imported report");
+      if (run.build !== body.build)
+        fail(409, "QA_BUILD_ID does not match the existing run build");
+      if (run.browser !== body.browser)
+        fail(409, "QA_BROWSER does not match the existing run browser");
+      const expected = run.expectedAutomationKeys
+        ? (JSON.parse(run.expectedAutomationKeys) as string[])
+        : null;
+      const requested = [...body.automationKeys].sort();
+      if (
+        !expected ||
+        JSON.stringify([...expected].sort()) !== JSON.stringify(requested)
+      )
+        fail(
+          409,
+          "Automation keys do not match the existing run's stored scope; create a new run",
+        );
+    }
+    const scenarios = latestAutomationChecks(
+      planId,
+      body.automationKeys,
+      body.browser,
+    );
+    const ready = scenarios.every((scenario) => scenario.ready);
+    res.status(ready ? 200 : 409).json({ ready, scenarios });
+  });
   api.get("/projects/:id/builds", (req, res) => {
     const projectId = param(req);
     must("projects", projectId);
@@ -262,13 +733,30 @@ export function createApp(config: AppConfig) {
     res.status(201).json(createCase(param(req), caseInput.parse(req.body)));
   });
   api.put("/cases/:id", (req, res) => {
-    const c = must("cases", param(req)),
-      content = caseInput.parse(req.body);
+    const c = must("cases", param(req));
+    let content = caseInput.parse(req.body);
     if (c.status === "deprecated")
       fail(
         409,
         "Deprecated cases cannot be edited; duplicate this case instead",
       );
+    const latest = db.one(
+      "SELECT content FROM versions WHERE caseId=? ORDER BY number DESC LIMIT 1",
+      c.id,
+    );
+    const currentContent = latest
+      ? caseVersionSchema.parse(JSON.parse(latest.content))
+      : null;
+    if (currentContent?.automationSource)
+      content = caseVersionSchema.parse({
+        ...content,
+        title: currentContent.title,
+        preconditions: currentContent.preconditions,
+        steps: currentContent.steps,
+        tags: currentContent.tags,
+        executionMode: currentContent.executionMode,
+        automationSource: currentContent.automationSource,
+      });
     const versionId = id();
     db.sqlite.transaction(() => {
       const n = db.one(
@@ -451,11 +939,40 @@ export function createApp(config: AppConfig) {
     });
   });
   api.post("/plans/:id/runs", (req, res) => {
-    const plan = must("plans", param(req)),
-      b = z
-        .object({ build: nameSchema, kind: z.enum(["manual", "automated"]) })
-        .parse(req.body),
-      row = { id: id(), planId: plan.id, ...b, createdAt: Date.now() };
+    const plan = must("plans", param(req));
+    const b = automationRunRequestSchema.parse(req.body);
+    if (["runner", "edit"].includes(res.locals.tokenScope)) {
+      if (res.locals.uploadTokenPlanId !== plan.id || b.kind !== "automated")
+        fail(403, "Edit tokens can only create automated runs for their plan");
+      if (!b.automationKeys)
+        fail(400, "Runner-created runs require automationKeys for preflight");
+      if (!b.browser)
+        fail(400, "Runner-created runs require browser for exact report validation");
+    }
+    if (b.automationKeys) {
+      const browser = b.browser || "chromium";
+      const scenarios = latestAutomationChecks(plan.id, b.automationKeys, browser);
+      if (scenarios.some((scenario) => !scenario.ready))
+        return res.status(409).json({
+          error: "Automation scenarios are not approved and in this frozen plan",
+          ready: false,
+          scenarios,
+        });
+    }
+    const row = {
+      id: id(),
+      planId: plan.id,
+      build: b.build,
+      kind: b.kind,
+      expectedAutomationKeys:
+        ["runner", "edit"].includes(res.locals.tokenScope) && b.automationKeys
+          ? JSON.stringify([...b.automationKeys].sort())
+          : null,
+      browser: ["runner", "edit"].includes(res.locals.tokenScope)
+        ? b.browser!
+        : b.browser || null,
+      createdAt: Date.now(),
+    };
     db.sqlite.transaction(() => {
       db.insert(t.runs, row);
       if (b.kind === "manual")
@@ -590,6 +1107,49 @@ export function createApp(config: AppConfig) {
     storage: multer.memoryStorage(),
     limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0 },
   }).single("report");
+  const importKeyCoverage = (
+    expectedJson: string | null,
+    tests: { automationKey?: string | null }[],
+  ) => {
+    const expected = expectedJson
+      ? (JSON.parse(expectedJson) as string[])
+      : null;
+    const observed = tests
+      .map((test) => test.automationKey || null)
+      .filter((key): key is string => !!key);
+    const expectedSet = new Set(expected || []);
+    const observedSet = new Set(observed);
+    const counts = new Map<string, number>();
+    observed.forEach((key) => counts.set(key, (counts.get(key) || 0) + 1));
+    const missingAutomationKeys = expected
+      ? expected.filter((key) => !observedSet.has(key))
+      : [];
+    const unexpectedAutomationKeys = expected
+      ? [...observedSet].filter((key) => !expectedSet.has(key)).sort()
+      : [];
+    const duplicateAutomationKeys = [...counts]
+      .filter(([, count]) => count > 1)
+      .map(([key]) => key)
+      .sort();
+    const unkeyedResults = expected
+      ? tests.filter((test) => !test.automationKey).length
+      : 0;
+    const matchesExpectedScope =
+      !expected ||
+      (missingAutomationKeys.length === 0 &&
+        unexpectedAutomationKeys.length === 0 &&
+        duplicateAutomationKeys.length === 0 &&
+        unkeyedResults === 0);
+    return {
+      expectedAutomationKeys: expected,
+      observedAutomationKeys: [...observedSet].sort(),
+      missingAutomationKeys,
+      unexpectedAutomationKeys,
+      duplicateAutomationKeys,
+      unkeyedResults,
+      matchesExpectedScope,
+    };
+  };
   api.post("/runs/:id/imports/playwright", reportUpload, (req, res) => {
     const run = runContext(param(req));
     if (run.kind !== "automated") fail(400, "Choose an automated run");
@@ -617,6 +1177,8 @@ export function createApp(config: AppConfig) {
         executions,
         unmatched: executions.filter((execution) => !execution.planItemId)
           .length,
+        ...importKeyCoverage(run.expectedAutomationKeys, executions),
+        complete: !!run.complete,
       });
     }
     assertStorage(db, file.size * 20);
@@ -638,6 +1200,21 @@ export function createApp(config: AppConfig) {
         );
       }
     })();
+    if (
+      run.expectedAutomationKeys &&
+      parsed.tests.some((test) => test.browser !== run.browser)
+    )
+      fail(
+        400,
+        `Playwright report browser must match this run's ${run.browser} browser`,
+      );
+    const keyCoverage = importKeyCoverage(
+      run.expectedAutomationKeys,
+      parsed.tests,
+    );
+    const expectedKeySet = keyCoverage.expectedAutomationKeys
+      ? new Set(keyCoverage.expectedAutomationKeys)
+      : null;
     const items = db.all(
       "SELECT i.*,v.caseId FROM plan_items i JOIN versions v ON v.id=i.versionId WHERE i.planId=?",
       run.planId,
@@ -645,14 +1222,41 @@ export function createApp(config: AppConfig) {
     const assigned = new Set<string>();
     const importId = id();
     const out: any[] = [];
+    const resolvedTests = parsed.tests.map((test) => {
+      const expectedKey =
+        !expectedKeySet ||
+        (!!test.automationKey && expectedKeySet.has(test.automationKey));
+      const source = test.automationKey && expectedKey
+        ? db.one(
+            "SELECT caseId FROM automation_sources WHERE projectId=? AND key=?",
+            run.projectId,
+            test.automationKey,
+          )
+        : null;
+      const mapping = db.one(
+        "SELECT caseId FROM mappings WHERE projectId=? AND externalKey=? AND verified=1",
+        run.projectId,
+        test.key,
+      );
+      const caseIds = expectedKey
+        ? [test.caseId, source?.caseId, mapping?.caseId].filter(
+        (caseId): caseId is string => !!caseId,
+          )
+        : [];
+      if (new Set(caseIds).size > 1)
+        fail(
+          400,
+          `Conflicting case mappings for Playwright test ${test.title}`,
+        );
+      return { test, caseId: caseIds[0] || null };
+    });
     db.sqlite.transaction(() => {
-      for (const test of parsed.tests) {
+      for (const { test, caseId } of resolvedTests) {
         const mapping = db.one(
           "SELECT caseId FROM mappings WHERE projectId=? AND externalKey=? AND verified=1",
           run.projectId,
           test.key,
         );
-        const caseId = test.caseId || mapping?.caseId;
         const candidates = items.filter(
           (i) => i.caseId === caseId && i.browser === test.browser,
         );
@@ -664,6 +1268,7 @@ export function createApp(config: AppConfig) {
           runId: run.id,
           planItemId: match?.id || null,
           title: test.title,
+          automationKey: test.automationKey,
           externalKey: test.key,
           projectName: test.projectName,
           browser: test.browser,
@@ -699,7 +1304,7 @@ export function createApp(config: AppConfig) {
       });
       db.run(
         "UPDATE runs SET imported=1,complete=? WHERE id=?",
-        parsed.complete ? 1 : 0,
+        parsed.complete && keyCoverage.matchesExpectedScope ? 1 : 0,
         run.id,
       );
       db.log("playwright.imported", run.id);
@@ -707,9 +1312,10 @@ export function createApp(config: AppConfig) {
     res.status(201).json({
       id: importId,
       runId: run.id,
-      complete: parsed.complete,
       executions: out,
       unmatched: out.filter((e) => !e.planItemId).length,
+      ...keyCoverage,
+      complete: parsed.complete && keyCoverage.matchesExpectedScope,
     });
   });
   api.post("/executions/:id/map", (req, res) => {
@@ -896,20 +1502,56 @@ export function createApp(config: AppConfig) {
     res.json({
       email: config.ownerEmail,
       storage: storageInfo(db),
+      githubSync: config.githubSource
+        ? {
+            configured: true,
+            repository: config.githubSource.repository,
+            branch: config.githubSource.branch,
+            featureRoot: config.githubSource.featureRoot,
+            browser: config.githubSource.browser || "chromium",
+          }
+        : { configured: false },
       tokens: db.all(
-        "SELECT id,name,createdAt FROM tokens ORDER BY createdAt DESC",
+        `SELECT t.id,t.name,t.planId,t.scope,p.name AS planName,t.createdAt
+         FROM tokens t LEFT JOIN plans p ON p.id=t.planId
+         ORDER BY t.createdAt DESC`,
       ),
     }),
   );
+  api.get("/integrations/github/manifest", githubManifestLimit, async (_req, res) => {
+    const githubSource = config.githubSource;
+    if (!githubSource) {
+      res.status(503).json({
+        error:
+          "Repository sync is not configured. Set GITHUB_REPOSITORY, GITHUB_BRANCH, and GITHUB_FEATURE_ROOT in the app environment.",
+      });
+      return;
+    }
+    const manifest = await loadGithubManifest(githubSource);
+    res.json(manifest);
+  });
   api.post("/tokens", (req, res) => {
-    const b = z.object({ name: nameSchema }).parse(req.body),
-      token = secret(),
-      row = {
-        id: id(),
-        name: b.name,
-        hash: digest(token),
-        createdAt: Date.now(),
-      };
+    const b = z
+      .object({
+        name: nameSchema,
+        planId: idSchema.nullable().optional(),
+        scope: z.enum(["read_only", "edit"]).optional(),
+      })
+      .parse(req.body);
+    const planId = b.planId || null;
+    const scope = b.scope || "edit";
+    const requiredPlanId =
+      planId || fail(400, "Automation tokens must be bound to a plan");
+    const token = secret();
+    const row = {
+      id: id(),
+      name: b.name,
+      hash: digest(token),
+      planId,
+      scope,
+      createdAt: Date.now(),
+    };
+    must("plans", requiredPlanId);
     db.insert(t.tokens, row);
     res.status(201).json({ id: row.id, token });
   });

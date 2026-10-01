@@ -22,7 +22,13 @@ import {
   ErrorMessage,
   useTask,
 } from "./components";
-import type { PageProps, Case, CaseContent, State } from "./types";
+import type {
+  PageProps,
+  Case,
+  CaseContent,
+  State,
+  SyncedAutomation,
+} from "./types";
 import {
   caseExecutionMode,
   executionModeLabel,
@@ -145,6 +151,18 @@ export function CasesPage(p: PageProps) {
                           {c.id} · v{c.number}
                           {c.tags.length ? ` · ${c.tags.join(", ")}` : ""}
                         </small>
+                        {c.automationSource && (
+                          <small>
+                            Repo source · <code>{c.automationSource.key}</code>{" "}
+                            · {c.automationSource.featurePath}
+                          </small>
+                        )}
+                        {c.automationSource && (
+                          <details className="automation-source">
+                            <summary>View synced Gherkin</summary>
+                            <pre>{c.automationSource.gherkin}</pre>
+                          </details>
+                        )}
                       </td>
                       <td>{c.component || "—"}</td>
                       <td>
@@ -327,15 +345,20 @@ export function CasesPage(p: PageProps) {
                 </ul>
               </div>
               <h4>{v.content.title}</h4>
+              {v.content.automationSource && (
+                <AutomationGherkin automation={v.content.automationSource} />
+              )}
               <p>{v.content.preconditions}</p>
-              <ol>
-                {v.content.steps.map((s: any, i: number) => (
-                  <li key={i}>
-                    {s.action}
-                    <small>Expected: {s.expected || "—"}</small>
-                  </li>
-                ))}
-              </ol>
+              {!v.content.automationSource && (
+                <ol>
+                  {v.content.steps.map((s: any, i: number) => (
+                    <li key={i}>
+                      {s.action}
+                      <small>Expected: {s.expected || "—"}</small>
+                    </li>
+                  ))}
+                </ol>
+              )}
             </section>
           ))}
         </Modal>
@@ -378,15 +401,29 @@ function CaseEditor({
         submit={initial ? "Save new revision" : "Create test case"}
         onCancel={close}
         onSubmit={async () => {
+          const repoOwnedContent = initial?.automationSource
+            ? {
+                title: initial.title,
+                tags: initial.tags,
+                executionMode: caseExecutionMode(initial),
+                automationSource: initial.automationSource,
+                ...(caseExecutionMode(initial) === "automated"
+                  ? { steps: initial.steps }
+                  : {}),
+              }
+            : {};
           await api(
             initial ? `/cases/${initial.id}` : `/projects/${projectId}/cases`,
             initial ? "PUT" : "POST",
             {
               ...value,
-              tags: tags
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
+              ...repoOwnedContent,
+              tags: initial?.automationSource
+                ? initial.tags
+                : tags
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
             },
           );
           await done();
@@ -397,9 +434,13 @@ function CaseEditor({
           <input
             required
             value={value.title}
+            readOnly={!!initial?.automationSource}
             onChange={(e) => setValue({ ...value, title: e.target.value })}
           />
         </Field>
+        {initial?.automationSource && (
+          <AutomationGherkin automation={initial.automationSource} />
+        )}
         <div className="form-grid">
           <Field label="Component">
             <input
@@ -421,99 +462,151 @@ function CaseEditor({
               ))}
             </select>
           </Field>
-          <Field label="Execution method">
-            <select
-              value={value.executionMode}
-              onChange={(e) =>
-                setValue({
-                  ...value,
-                  executionMode: e.target.value as ExecutionMode,
-                })
-              }
-            >
-              {Object.entries(executionModeLabel).map(([mode, label]) => (
-                <option key={mode} value={mode}>
-                  {label}
-                </option>
-              ))}
-            </select>
+          {initial?.automationSource ? (
+            <Field label="Execution method">
+              <input
+                value={executionModeLabel[caseExecutionMode(initial)]}
+                readOnly
+              />
+            </Field>
+          ) : (
+            <Field label="Execution method">
+              <select
+                value={value.executionMode}
+                onChange={(e) =>
+                  setValue({
+                    ...value,
+                    executionMode: e.target.value as ExecutionMode,
+                  })
+                }
+              >
+                {Object.entries(executionModeLabel).map(([mode, label]) => (
+                  <option key={mode} value={mode}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+        </div>
+        {initial?.automationSource ? (
+          <Field label="Repo-owned tags">
+            <p className="muted">
+              {initial.automationSource.tags.length
+                ? initial.automationSource.tags.join(", ")
+                : "No automation tags"}
+            </p>
           </Field>
-        </div>
-        <Field label="Tags (comma separated)">
-          <input value={tags} onChange={(e) => setTags(e.target.value)} />
-        </Field>
-        <Field label="Preconditions">
-          <textarea
-            value={value.preconditions}
-            onChange={(e) =>
-              setValue({ ...value, preconditions: e.target.value })
-            }
-          />
-        </Field>
-        <div className="steps-heading">
-          <h3>Test steps</h3>
-          <button
-            type="button"
-            onClick={() =>
-              setValue({
-                ...value,
-                steps: [...value.steps, { action: "", expected: "" }],
-              })
-            }
-          >
-            <Plus size={14} />
-            Add step
-          </button>
-        </div>
-        {value.steps.map((s, i) => (
-          <div className="step-editor" key={i}>
-            <span className="step-number">{i + 1}</span>
-            <div className="grow">
-              <Field label={`Step ${i + 1} action`}>
-                <textarea
-                  required
-                  value={s.action}
-                  onChange={(e) =>
-                    setValue({
-                      ...value,
-                      steps: value.steps.map((x, n) =>
-                        n === i ? { ...x, action: e.target.value } : x,
-                      ),
-                    })
-                  }
-                />
-              </Field>
-              <Field label={`Step ${i + 1} expected result`}>
-                <textarea
-                  value={s.expected}
-                  onChange={(e) =>
-                    setValue({
-                      ...value,
-                      steps: value.steps.map((x, n) =>
-                        n === i ? { ...x, expected: e.target.value } : x,
-                      ),
-                    })
-                  }
-                />
-              </Field>
-            </div>
-            <button
-              type="button"
-              aria-label={`Remove step ${i + 1}`}
-              disabled={value.steps.length === 1}
-              onClick={() =>
-                setValue({
-                  ...value,
-                  steps: value.steps.filter((_, n) => n !== i),
-                })
+        ) : (
+          <Field label="Tags (comma separated)">
+            <input value={tags} onChange={(e) => setTags(e.target.value)} />
+          </Field>
+        )}
+        {initial?.automationSource &&
+        caseExecutionMode(initial) === "automated" ? (
+          <Field label="Repo-owned Background (read-only)">
+            <pre className="automation-gherkin">
+              {initial.automationSource.background.join("\n") ||
+                "No Background"}
+            </pre>
+          </Field>
+        ) : (
+          <Field label="Preconditions">
+            <textarea
+              value={value.preconditions}
+              onChange={(e) =>
+                setValue({ ...value, preconditions: e.target.value })
               }
-            >
-              ×
-            </button>
-          </div>
-        ))}
+            />
+          </Field>
+        )}
+        {(!initial?.automationSource ||
+          caseExecutionMode(initial) === "both" ||
+          caseExecutionMode(initial) === "manual") && (
+          <>
+            <div className="steps-heading">
+              <h3>Test steps</h3>
+              <button
+                type="button"
+                onClick={() =>
+                  setValue({
+                    ...value,
+                    steps: [...value.steps, { action: "", expected: "" }],
+                  })
+                }
+              >
+                <Plus size={14} />
+                Add step
+              </button>
+            </div>
+            {value.steps.map((s, i) => (
+              <div className="step-editor" key={i}>
+                <span className="step-number">{i + 1}</span>
+                <div className="grow">
+                  <Field label={`Step ${i + 1} action`}>
+                    <textarea
+                      required
+                      value={s.action}
+                      onChange={(e) =>
+                        setValue({
+                          ...value,
+                          steps: value.steps.map((x, n) =>
+                            n === i ? { ...x, action: e.target.value } : x,
+                          ),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label={`Step ${i + 1} expected result`}>
+                    <textarea
+                      value={s.expected}
+                      onChange={(e) =>
+                        setValue({
+                          ...value,
+                          steps: value.steps.map((x, n) =>
+                            n === i ? { ...x, expected: e.target.value } : x,
+                          ),
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Remove step ${i + 1}`}
+                  disabled={value.steps.length === 1}
+                  onClick={() =>
+                    setValue({
+                      ...value,
+                      steps: value.steps.filter((_, n) => n !== i),
+                    })
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </>
+        )}
       </Form>
     </Modal>
+  );
+}
+
+function AutomationGherkin({ automation }: { automation: SyncedAutomation }) {
+  return (
+    <section className="history-version">
+      <h4>Repository-owned automation</h4>
+      <p>
+        <strong>Scenario key:</strong> <code>{automation.key}</code>
+      </p>
+      <p>
+        <strong>Feature file:</strong> {automation.featurePath}
+      </p>
+      <Field label="Gherkin (read-only)">
+        <pre className="automation-gherkin">{automation.gherkin}</pre>
+      </Field>
+    </section>
   );
 }
 function CollectionEditor({

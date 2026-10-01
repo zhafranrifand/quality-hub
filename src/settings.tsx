@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { Copy, Download, KeyRound, ShieldCheck } from "lucide-react";
+import {
+  Copy,
+  Download,
+  GitBranch,
+  KeyRound,
+  LoaderCircle,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
 import { api, bytes, date, percent } from "./api";
 import {
   ErrorMessage,
@@ -9,14 +17,30 @@ import {
   Panel,
   useTask,
 } from "./components";
+import type {
+  AutomationPlanOption,
+  AutomationTokenScope,
+  StoredAutomationToken,
+} from "./types";
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<any>(null),
+    [plans, setPlans] = useState<AutomationPlanOption[]>([]),
     [name, setName] = useState(""),
+    [scope, setScope] = useState<AutomationTokenScope>("edit"),
+    [planId, setPlanId] = useState(""),
+    [syncPlanId, setSyncPlanId] = useState(""),
+    [syncResult, setSyncResult] = useState<any>(null),
     [token, setToken] = useState("");
-  const { task, error } = useTask();
+  const { task, error, busy } = useTask();
   async function refresh() {
-    setSettings(await api("/settings"));
+    const [currentSettings, availablePlans] = await Promise.all([
+      api("/settings"),
+      api("/plans"),
+    ]);
+    setSettings(currentSettings);
+    setPlans(availablePlans);
+    setSyncPlanId((current) => current || availablePlans[0]?.id || "");
   }
   useEffect(() => {
     void task(refresh);
@@ -71,16 +95,24 @@ export function SettingsPage() {
         </Panel>
       </div>
       <Panel
-        title="Upload tokens"
-        description="Tokens can only submit Playwright reports and screenshots. They cannot read your workspace."
+        title="Automation tokens"
+        description="Create one of two plan-bound API tokens. Read-only tokens can view the selected plan's project data. Edit tokens can sync automation drafts, create automated runs, and submit results and evidence. Neither can approve cases, change frozen plan scope, access settings, or download backups."
         action={<KeyRound size={20} />}
       >
         <Form
-          submit="Create upload token"
+          submit="Create token"
           onSubmit={async () => {
-            const t = await api("/tokens", "POST", { name });
+            if (!planId)
+              throw new Error("Select a plan for this token scope");
+            const t = await api("/tokens", "POST", {
+              name,
+              scope,
+              planId,
+            });
             setToken(t.token);
             setName("");
+            setScope("edit");
+            setPlanId("");
             await refresh();
           }}
         >
@@ -92,7 +124,42 @@ export function SettingsPage() {
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
+          <Field label="Token scope">
+            <select
+              value={scope}
+              onChange={(e) => {
+                const nextScope = e.target.value as AutomationTokenScope;
+                setScope(nextScope);
+              }}
+            >
+              <option value="read_only">Read-only · view plan project data</option>
+              <option value="edit">Edit · sync, run, and submit results</option>
+            </select>
+          </Field>
+          <Field label="Plan access">
+            <select
+              required
+              value={planId}
+              onChange={(e) => setPlanId(e.target.value)}
+            >
+              <option value="">Select a plan</option>
+              {plans.map((plan) => (
+                <option value={plan.id} key={plan.id}>
+                  {plan.projectName} / {plan.releaseName} / {plan.name}
+                </option>
+              ))}
+            </select>
+          </Field>
         </Form>
+        <p className="muted">
+          Read-only access is limited to the project associated with the
+          selected plan. Edit tokens can sync scenarios as drafts, create
+          automated runs, and upload reports and screenshots within that plan.
+          A changed scenario creates a revision and does not rewrite frozen plan
+          versions. Tokens cannot approve cases, alter frozen plan scope, read
+          settings, or download backups. The secret is shown once and is never
+          displayed again.
+        </p>
         {token && (
           <div className="token-reveal">
             <strong>Copy this token now. It is shown only once.</strong>
@@ -106,15 +173,22 @@ export function SettingsPage() {
             <button onClick={() => setToken("")}>Dismiss</button>
           </div>
         )}
-        {settings.tokens.map((t: any) => (
+        {settings.tokens.map((t: StoredAutomationToken) => (
           <div className="list-row" key={t.id}>
             <div className="grow">
               <strong>{t.name}</strong>
-              <small>{date(t.createdAt)}</small>
+              <small>
+                {t.planName
+                  ? `${tokenScopeLabel(t)} · ${t.planName}`
+                  : "Legacy unscoped token · revoke and replace"}{" "}
+                · {date(t.createdAt)}
+              </small>
             </div>
             <button
               onClick={() => {
-                if (confirm("Revoke this upload token?"))
+                if (
+                  confirm(`Revoke the ${tokenScopeName(t)} token "${t.name}"?`)
+                )
                   void task(async () => {
                     await api(`/tokens/${t.id}`, "DELETE");
                     await refresh();
@@ -125,6 +199,84 @@ export function SettingsPage() {
             </button>
           </div>
         ))}
+      </Panel>
+      <Panel
+        title="Sync from GitHub"
+        description={
+          settings.githubSync?.configured
+            ? `${settings.githubSync.repository} · ${settings.githubSync.branch} · ${settings.githubSync.featureRoot}`
+            : "Connect the repository in the Railway service variables to enable one-click sync."
+        }
+        action={<GitBranch size={19} />}
+      >
+        {settings.githubSync?.configured ? (
+          <>
+            <p>
+              Read-only source connection. This fetches the latest tagged Gherkin
+              scenarios and syncs them into the selected plan's project; it does
+              not run Playwright tests.
+            </p>
+            <Field label="Target plan">
+              <select
+                value={syncPlanId}
+                onChange={(event) => setSyncPlanId(event.target.value)}
+              >
+                <option value="">Select a plan</option>
+                {plans.map((plan) => (
+                  <option value={plan.id} key={plan.id}>
+                    {plan.projectName} / {plan.releaseName} / {plan.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <button
+              className="primary"
+              disabled={busy || !syncPlanId}
+              onClick={() =>
+                void task(async () => {
+                  setSyncResult(null);
+                  const manifest = await api("/integrations/github/manifest");
+                  const result = await api(
+                    `/plans/${syncPlanId}/automation/sync`,
+                    "POST",
+                    {
+                      browser: manifest.browser,
+                      scenarios: manifest.scenarios,
+                    },
+                  );
+                  setSyncResult({ manifest, result });
+                })
+              }
+            >
+              {busy ? (
+                <LoaderCircle size={16} className="spin" />
+              ) : (
+                <RefreshCw size={16} />
+              )}{" "}
+              {busy ? "Syncing…" : "Sync from repo"}
+            </button>
+            {syncResult && (
+              <div className="token-reveal" role="status">
+                <strong>
+                  Synced {syncResult.result.scenarios.length} scenarios from
+                  commit {syncResult.manifest.commitSha.slice(0, 7)}.
+                </strong>
+                <p>
+                  {syncResult.result.ready
+                    ? "All scenarios are approved and present in this plan."
+                    : "Review any draft cases and update the frozen plan before running automation."}
+                </p>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="muted">
+            Configure GITHUB_REPOSITORY, GITHUB_BRANCH, and
+            GITHUB_FEATURE_ROOT in Railway Variables. Public repositories need
+            no token. For a private repository, configure an optional
+            repository-limited GITHUB_READ_TOKEN with Contents read access.
+          </p>
+        )}
       </Panel>
       <Panel
         title="Backup & recovery"
@@ -153,4 +305,22 @@ export function SettingsPage() {
       </Panel>
     </>
   );
+}
+
+function tokenScopeLabel(token: StoredAutomationToken) {
+  const scope = token.scope || (token.planId ? "runner" : "upload");
+  if (scope === "read_only") return "Read-only";
+  if (scope === "edit") return "Edit";
+  if (scope === "automation_sync") return "Edit · legacy sync only";
+  if (scope === "runner") return "Edit · legacy runner only";
+  return "Edit · legacy upload only";
+}
+
+function tokenScopeName(token: StoredAutomationToken) {
+  const scope = token.scope || (token.planId ? "runner" : "upload");
+  if (scope === "read_only") return "read-only";
+  if (scope === "edit") return "edit";
+  if (scope === "automation_sync") return "legacy automation-sync";
+  if (scope === "runner") return "legacy runner";
+  return "legacy upload-only";
 }

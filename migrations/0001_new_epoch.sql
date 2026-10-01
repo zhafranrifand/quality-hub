@@ -1,0 +1,1 @@
+ALTER TABLE `tokens` ADD `planId` text REFERENCES plans(id);

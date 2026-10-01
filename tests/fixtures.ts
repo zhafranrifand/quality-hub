@@ -13,6 +13,7 @@ export function report(
     expectedStatus?: string;
     errors?: unknown[];
     browser?: string;
+    tags?: string[];
   } = {},
 ) {
   return {
@@ -25,6 +26,7 @@ export function report(
           {
             title: "Complete checkout",
             file: "checkout.spec.ts",
+            tags: options.tags || [],
             tests: [
               {
                 projectName: options.browser || "chromium",

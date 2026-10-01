@@ -1,12 +1,34 @@
 import type { CaseContent, ExecutionStatus, Gate } from "../shared/contracts";
 export type { CaseContent, ExecutionStatus, Gate };
 export type Project = { id: string; name: string };
+export type SyncedAutomation = NonNullable<CaseContent["automationSource"]>;
 export type Case = CaseContent & {
   id: string;
   versionId: string;
   number: number;
   status: string;
   approved: boolean;
+  createdAt: number;
+};
+export type AutomationTokenScope =
+  | "read_only"
+  | "edit"
+  | "upload"
+  | "runner"
+  | "automation_sync";
+export type AutomationPlanOption = {
+  id: string;
+  name: string;
+  releaseName: string;
+  projectId: string;
+  projectName: string;
+};
+export type StoredAutomationToken = {
+  id: string;
+  name: string;
+  scope?: AutomationTokenScope;
+  planId?: string | null;
+  planName?: string | null;
   createdAt: number;
 };
 export type PlanItem = {

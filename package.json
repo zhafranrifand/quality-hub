@@ -10,7 +10,9 @@
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "test:lokasi": "playwright test --config playwright.lokasi.config.ts",
+    "bddgen:lokasi": "bddgen test --config playwright.lokasi.config.ts",
+    "test:lokasi": "npm run bddgen:lokasi && playwright test --config playwright.lokasi.config.ts",
+    "test:lokasi:dashboard": "tsx scripts/run-lokasi-dashboard.ts",
     "db:generate": "drizzle-kit generate",
     "password": "tsx scripts/password.ts",
     "upload": "tsx scripts/upload.ts",
@@ -19,6 +21,7 @@
     "verify": "tsx scripts/verify.ts"
   },
   "dependencies": {
+    "@cucumber/gherkin": "^32.2.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^12.4.1",
     "drizzle-orm": "^0.45.3",
@@ -34,7 +37,7 @@
     "zod": "^4.1.11"
   },
   "devDependencies": {
-    "@playwright/test": "^1.55.1",
+    "@playwright/test": "1.59.0",
     "@types/archiver": "^6.0.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.3",
@@ -46,6 +49,7 @@
     "@types/yauzl": "^2.10.3",
     "@vitejs/plugin-react": "^4.7.0",
     "drizzle-kit": "^0.31.4",
+    "playwright-bdd": "^8.5.1",
     "prettier": "^3.9.9",
     "supertest": "^7.1.4",
     "tsup": "^8.5.0",

@@ -390,11 +390,12 @@ function ImportReport({
       <details className="integration-help">
         <summary>Configure Playwright and the local uploader</summary>
         <p>
-          Use a case annotation with the stable ID shown in your case library.
-          Set the plan browser to your Playwright project name, or provide
-          browserName in project metadata.
+          Tag each Gherkin scenario with its stable case ID, such as
+          @TC-XXXXXXXX. Other tags such as @smoke are fine. The plan browser
+          must match the Playwright project name, or provide browserName in
+          project metadata.
         </p>
-        <pre>{`// playwright.config.ts\nreporter: [['list'], ['json', { outputFile: 'results.json' }]]\n\n// Inside a test\ntest.info().annotations.push({ type: 'case', description: 'TC-XXXXXXXX' });\n\n// Upload (set QA_UPLOAD_TOKEN in your environment)\nnpm run upload -- --url https://YOUR-APP --run-id ${detail.run.id} --report results.json`}</pre>
+        <pre>{`// tests/feature-name.feature\n@TC-XXXXXXXX @smoke\nScenario: Customer can place an order\n  Given the customer has an active account\n  When the customer submits a valid order\n  Then the order is confirmed\n\n// For the one-command LOKASI runner, set QA_DASHBOARD_URL,\n// QA_PLAN_ID, QA_BUILD_ID, and a plan-bound QA_EDIT_TOKEN.\nnpm run test:lokasi:dashboard\n\n// Or upload this existing run manually with a plan-bound Edit token:\n// set QA_EDIT_TOKEN first\nnpm run upload -- --url https://YOUR-APP --run-id ${detail.run.id} --report results.json`}</pre>
         <p>
           Videos and traces stay local. Add an HTTPS link if you publish
           evidence elsewhere.

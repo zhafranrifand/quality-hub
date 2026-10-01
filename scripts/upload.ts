@@ -27,6 +27,8 @@ const { values } = parseArgs({
   strict: true,
 });
 
+const uploadToken =
+  process.env.QA_EDIT_TOKEN?.trim() || process.env.QA_UPLOAD_TOKEN?.trim();
 const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
 async function postForm(
@@ -40,7 +42,7 @@ async function postForm(
       const response = await fetch(new URL(path, base), {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${process.env.QA_UPLOAD_TOKEN}`,
+          Authorization: `Bearer ${uploadToken}`,
           ...extraHeaders,
         },
         body: makeForm(),
@@ -89,10 +91,10 @@ async function main() {
     !values.url ||
     !values["run-id"] ||
     !values.report ||
-    !process.env.QA_UPLOAD_TOKEN
+    !uploadToken
   )
     throw new Error(
-      "Usage: npm run upload -- --url https://your-app --run-id ID --report results.json; set QA_UPLOAD_TOKEN",
+      "Usage: npm run upload -- --url https://your-app --run-id ID --report results.json; set QA_EDIT_TOKEN",
     );
   const url = new URL(values.url);
   if (

@@ -64,6 +64,26 @@ describe("Playwright parser", () => {
     expect(p.tests[0].caseId).toBe("TC-1");
     expect(p.tests[0].attempts[0].attachments?.[0].path).toContain("trace.zip");
   });
+  it("maps a Playwright case tag and ignores non-case tags", () => {
+    const parsed = parseReport(
+      report(null, ["passed"], { tags: ["smoke", "TC-1234ABCD"] }),
+    );
+    expect(parsed.tests[0].caseId).toBe("TC-1234ABCD");
+  });
+  it("accepts a matching case annotation and case tag", () => {
+    const parsed = parseReport(
+      report("TC-1234ABCD", ["passed"], { tags: ["TC-1234ABCD"] }),
+    );
+    expect(parsed.tests[0].caseId).toBe("TC-1234ABCD");
+  });
+  it("rejects conflicting case tags or annotation/tag IDs", () => {
+    expect(() =>
+      parseReport(report(null, ["passed"], { tags: ["TC-1", "TC-2"] })),
+    ).toThrow(/conflicting case IDs/);
+    expect(() =>
+      parseReport(report("TC-1", ["passed"], { tags: ["TC-2"] })),
+    ).toThrow(/conflicting case IDs/);
+  });
   it("does not turn expected failures or unexpected passes into passes", () => {
     expect(
       parseReport(report("TC-1", ["failed"], { expectedStatus: "failed" }))

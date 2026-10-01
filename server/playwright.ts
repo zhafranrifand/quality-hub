@@ -1,5 +1,9 @@
 import { z } from "zod";
-import type { ImportedTest, Attempt } from "../shared/contracts.js";
+import {
+  automationKeySchema,
+  type ImportedTest,
+  type Attempt,
+} from "../shared/contracts.js";
 const annotation = z.object({
   type: z.string(),
   description: z.string().optional(),
@@ -38,6 +42,7 @@ const spec = z.object({
   title: z.string(),
   id: z.string().optional(),
   file: z.string().optional(),
+  tags: z.array(z.string()).default([]),
   tests: z.array(test),
 });
 const suite: z.ZodType<any> = z.lazy(() =>
@@ -88,11 +93,27 @@ export function parseReport(input: unknown) {
         const browser =
           project?.use?.browserName ||
           String(project?.metadata?.browserName || t.projectName || "chromium");
-        const explicit = t.annotations
+        const annotatedCaseIds = t.annotations
           .filter((a) => a.type === "case" && a.description)
           .map((a) => a.description!);
-        if (explicit.length > 1)
+        if (annotatedCaseIds.length > 1)
           throw new Error("Use one case annotation per test.");
+        const taggedCaseIds = sp.tags
+          .map((tag) => tag.replace(/^@/, ""))
+          .filter((tag) => /^TC-[A-Z0-9][A-Z0-9_-]*$/i.test(tag));
+        const caseIds = [...new Set([...annotatedCaseIds, ...taggedCaseIds])];
+        if (caseIds.length > 1)
+          throw new Error(
+            "A test has conflicting case IDs. Keep one @TC-… tag or one matching case annotation.",
+          );
+        const automationKeys = sp.tags
+          .map((tag) => tag.replace(/^@/, ""))
+          .filter((tag) => tag.startsWith("qh_key_"))
+          .map((tag) => tag.slice("qh_key_".length));
+        if (automationKeys.some((key) => !automationKeySchema.safeParse(key).success))
+          throw new Error("Use a valid @qh_key_<lowercase_project_and_slug> tag.");
+        if (new Set(automationKeys).size > 1)
+          throw new Error("Use one @qh_key_… tag per scenario.");
         const attempts: Attempt[] = t.results.map((r) => ({
           status:
             r.status === "timedOut"
@@ -133,7 +154,8 @@ export function parseReport(input: unknown) {
           title,
           projectName: t.projectName,
           browser,
-          caseId: explicit[0] || null,
+          caseId: caseIds[0] || null,
+          automationKey: automationKeys[0] || null,
           attempts,
           flaky:
             attempts.at(-1)?.status === "passed" &&

@@ -14,6 +14,102 @@ export const statusSchema = z.enum([
 export type ExecutionStatus = z.infer<typeof statusSchema>;
 export const executionModeSchema = z.enum(["manual", "automated", "both"]);
 export type ExecutionMode = z.infer<typeof executionModeSchema>;
+export const automationKeySchema = z
+  .string()
+  .min(1)
+  .max(160)
+  .regex(/^[a-z0-9]+(?:[_-][a-z0-9]+)*$/);
+export const gherkinStepSchema = z.object({
+  keyword: z.enum(["Given", "When", "Then", "And", "But", "*"]),
+  text: z.string().trim().min(1).max(5000),
+});
+export const automationSourceSchema = z.object({
+  key: automationKeySchema,
+  featurePath: z.string().trim().min(1).max(500),
+  gherkin: z.string().trim().min(1).max(20000),
+  background: z.array(z.string().trim().min(1).max(5000)).max(50),
+  steps: z.array(gherkinStepSchema).min(1).max(100),
+  tags: z.array(z.string().trim().min(1).max(50)).max(30),
+});
+export const automationSyncRequestSchema = z
+  .object({
+    browser: nameSchema,
+    scenarios: z
+      .array(
+        automationSourceSchema.extend({
+          title: nameSchema,
+          legacyCaseId: z
+            .string()
+            .regex(/^TC-[A-Z0-9][A-Z0-9_-]*$/i)
+            .optional(),
+        }),
+      )
+      .min(1)
+      .max(500),
+  })
+  .superRefine(({ scenarios }, ctx) => {
+    const keys = new Set<string>();
+    scenarios.forEach((scenario, index) => {
+      if (keys.has(scenario.key))
+        ctx.addIssue({
+          code: "custom",
+          path: ["scenarios", index, "key"],
+          message: "Scenario keys must be unique in a sync request",
+        });
+      keys.add(scenario.key);
+      const sourceTags = scenario.tags
+        .map((tag) => tag.replace(/^@/, ""))
+        .filter((tag) => tag.startsWith("qh_key_"));
+      if (
+        sourceTags.length > 1 ||
+        (sourceTags.length === 1 && sourceTags[0] !== `qh_key_${scenario.key}`)
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["scenarios", index, "tags"],
+          message: "The qh_key tag must match the scenario key",
+        });
+      if (/^\s*Scenario\s+Outline\s*:/im.test(scenario.gherkin))
+        ctx.addIssue({
+          code: "custom",
+          path: ["scenarios", index, "gherkin"],
+          message: "Scenario Outlines are not supported by automation sync v1",
+        });
+    });
+  });
+export const automationRunRequestSchema = z
+  .object({
+    build: nameSchema,
+    kind: z.enum(["manual", "automated"]),
+    automationKeys: z.array(automationKeySchema).min(1).max(500).optional(),
+    browser: nameSchema.optional(),
+  })
+  .superRefine(({ automationKeys }, ctx) => {
+    if (
+      automationKeys &&
+      new Set(automationKeys).size !== automationKeys.length
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["automationKeys"],
+        message: "Automation keys must be unique",
+      });
+  });
+export const automationPreflightRequestSchema = z
+  .object({
+    automationKeys: z.array(automationKeySchema).min(1).max(500),
+    browser: nameSchema,
+    build: nameSchema,
+    runId: idSchema.optional(),
+  })
+  .superRefine(({ automationKeys }, ctx) => {
+    if (new Set(automationKeys).size !== automationKeys.length)
+      ctx.addIssue({
+        code: "custom",
+        path: ["automationKeys"],
+        message: "Automation keys must be unique",
+      });
+  });
 export const caseInput = z.object({
   title: nameSchema,
   preconditions: textSchema.default(""),
@@ -31,8 +127,12 @@ export const caseInput = z.object({
   tags: z.array(z.string().max(50)).max(30).default([]),
   executionMode: executionModeSchema.default("both"),
 });
+export const caseVersionSchema = caseInput.extend({
+  automationSource: automationSourceSchema.optional(),
+});
 export type CaseContent = Omit<z.infer<typeof caseInput>, "executionMode"> & {
   executionMode?: ExecutionMode;
+  automationSource?: z.infer<typeof automationSourceSchema>;
 };
 export type Attempt = {
   status: ExecutionStatus;
@@ -49,6 +149,7 @@ export type ImportedTest = {
   projectName: string;
   browser: string;
   caseId: string | null;
+  automationKey?: string | null;
   attempts: Attempt[];
   flaky: boolean;
 };

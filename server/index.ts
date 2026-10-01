@@ -13,6 +13,17 @@ const { app, db } = createApp({
   passwordHash: OWNER_PASSWORD_HASH,
   publicOrigin: process.env.PUBLIC_ORIGIN,
   production: process.env.NODE_ENV === "production",
+  githubSource: process.env.GITHUB_REPOSITORY?.trim()
+    ? {
+        repository: process.env.GITHUB_REPOSITORY.trim(),
+        branch: process.env.GITHUB_BRANCH?.trim() || "main",
+        featureRoot:
+          process.env.GITHUB_FEATURE_ROOT?.trim() ||
+          "tests/targets/lokasi",
+        token: process.env.GITHUB_READ_TOKEN?.trim() || undefined,
+        browser: process.env.GITHUB_SYNC_BROWSER?.trim() || "chromium",
+      }
+    : undefined,
 });
 const server = app.listen(Number(process.env.PORT || 3000), "0.0.0.0", () =>
   console.log(`Quality Hub listening on port ${process.env.PORT || 3000}`),

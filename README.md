@@ -43,26 +43,40 @@ export default defineConfig({
 });
 ```
 
-Annotate each test with a stable case ID from Quality Hub:
+The LOKASI suite uses executable Gherkin `.feature` files with `playwright-bdd`; `npm run test:lokasi` generates Playwright tests from them before execution. Give each automated scenario a stable repository key such as `@qh_key_lokasi_auth_empty_email`. This key syncs scenario metadata into Quality Hub; the dashboard keeps its own `TC-…` case ID. Existing `@TC-…` tags remain supported to connect scenarios to manually authored cases during migration:
 
-```ts
-test("customer can place an order", async ({ page }) => {
-  test.info().annotations.push({ type: "case", description: "TC-1234ABCD" });
-  // test steps ...
-});
+```gherkin
+@qh_key_checkout_place_order @TC-1234ABCD @smoke
+Scenario: Customer can place an order
+  Given the customer has an active account
+  When the customer submits a valid order
+  Then the order is confirmed
 ```
+
+Playwright-BDD carries Gherkin tags into the Playwright JSON report, which Quality Hub reads. Scenario identity comes from the stable `@qh_key_…` key—not the title or file path—so renames do not create duplicate cases. A key maps to one case within its project. Changed feature content creates a draft revision; it never rewrites a frozen plan or historical run, and it is not approved automatically. Existing `type: "case"` annotations remain supported for compatibility. Conflicting stable keys and `@TC-…` identities are rejected instead of silently mapping incorrectly.
 
 The plan's browser should match the Playwright project name. Reports with an explicit `browserName` in project `use` or `metadata` use that value instead. If the plan repeats a case/browser across environments, the result remains unmatched until you explicitly choose its environment. The app never guesses from test titles.
 
-Use **Test Runs → Open run → Import report**, or create an upload token in **Settings** and set `QA_UPLOAD_TOKEN` locally:
+For a one-command local run, create an **Edit** token for the selected plan in **Settings** and configure these variables in your local secret manager (or an untracked `.env` file):
 
 ```sh
-npm run upload -- --url https://YOUR-APP.up.railway.app --run-id RUN_ID --report results.json
+QA_DASHBOARD_URL=https://YOUR-APP.up.railway.app
+QA_PLAN_ID=YOUR_PLAN_ID
+QA_BUILD_ID=your-build-id
+QA_BROWSER=chromium
+QA_EDIT_TOKEN=your-plan-scoped-edit-token
+npm run test:lokasi:dashboard
 ```
 
-The uploader retries network failures and 502/503/504 cold-start responses up to five attempts. Identical uploads to the same run are idempotent. If the Playwright report includes local screenshot attachments, the CLI also uploads the final screenshot for each execution, on both pass and failure; repeat uploads do not duplicate images. Keep the report and its artifact directory together and run the CLI on the machine where Playwright ran. A browser-only JSON import does not transfer local image files; add those manually from the execution view. A different report requires a new run. Reports are limited to 10 MB and 5,000 tests; repeated identical test identities must be split into separate runs. Unmatched tests remain available for explicit mapping.
+The command syncs tagged scenarios into Quality Hub as draft automated cases. Review and approve them, then include the approved versions in a new frozen plan. On later runs, the command verifies every scenario is approved and in the selected plan before it creates a run; it then generates and executes the Gherkin suite and imports the JSON report and screenshots—even when a test fails. The plan-bound Edit token is used for scenario sync, automated run creation, and result/evidence upload; it cannot approve cases or change frozen plan scope. The command exits nonzero when tests fail, while retaining the imported results. Keep `LOKASI_EMAIL` and `LOKASI_PASSWORD` in a local secret manager for authenticated scenarios. For manual uploads, use **Test Runs → Open run → Import report** or use a plan-bound Edit token with `npm run upload -- --url URL --run-id RUN_ID --report results.json` and `QA_EDIT_TOKEN` set.
 
-Results store all attempts, expected and actual statuses, timing, errors, and attachment metadata. Local trace/video paths are not remotely accessible; use external HTTPS links for published traces/videos. Upload tokens can submit reports and screenshots only; they cannot read data or modify cases.
+For one-click synchronization from the hosted dashboard, configure `GITHUB_REPOSITORY`, `GITHUB_BRANCH`, and `GITHUB_FEATURE_ROOT` in Railway. Public repositories need no token; a private repository can optionally use `GITHUB_READ_TOKEN` with repository-only **Contents: read** permission. Then open **Settings → Sync from GitHub**, select the target plan, and press **Sync from repo**. Quality Hub fetches a consistent branch commit, parses the `.feature` files under the configured root, and sends them through the same scenario sync validation. It does not run Playwright; approval and frozen-plan updates remain separate. Any optional source token stays server-side and is never returned to the browser.
+
+Set optional `QA_RUN_ID` only to resume an existing, unimported automated run; otherwise each invocation creates a fresh run.
+
+Every newly created API token is bound to one plan. Read-only tokens can query that plan's project data but cannot write; Edit tokens can sync automation drafts, create automated runs, and submit reports/screenshots for that plan. Neither token can approve cases, alter frozen plan scope, read Settings, or download backups. Existing legacy upload, runner, and automation-sync tokens retain their narrower permissions until revoked. Scenario identity is project-wide, so a changed source may create a new case revision used by future plans; frozen plan items and historical runs retain their original versions. Legacy unscoped tokens are denied write access; revoke and replace them with plan-bound tokens. Identical report uploads are idempotent; screenshot retries do not create duplicates. Reports are limited to 10 MB and 5,000 tests; repeated identical test identities must be split into separate runs. Unmatched or out-of-scope tests remain visible but cannot satisfy planned coverage.
+
+Results store all attempts, expected and actual statuses, timing, errors, and attachment metadata. Local trace/video paths are not remotely accessible; use external HTTPS links for published traces/videos. API tokens cannot approve cases or modify frozen plan scope.
 
 ## Release rules
 
@@ -109,7 +123,7 @@ To restore offline:
 npm run restore -- --from backup.zip --to ./restored-data
 ```
 
-Set `DATA_DIR` to the restored directory, retain/reconfigure owner credentials, and restart. Restore validates archive paths, size, manifest, SQLite integrity/foreign keys, and screenshot references. Create fresh upload tokens afterward. Never restore over a running or nonempty data directory.
+Set `DATA_DIR` to the restored directory, retain/reconfigure owner credentials, and restart. Restore validates archive paths, size, manifest, SQLite integrity/foreign keys, and screenshot references. Create fresh plan-bound API tokens afterward. Never restore over a running or nonempty data directory.
 
 ## Verification and maintenance
 

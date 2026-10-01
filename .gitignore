@@ -4,6 +4,7 @@ dist/
 data/
 test-results/
 lokasi-results/
+.features-gen/
 playwright-report/
 *.sqlite*
 *.zip

@@ -124,6 +124,8 @@ export const runs = sqliteTable(
       .references(() => plans.id),
     build: text().notNull(),
     kind: text().notNull(),
+    expectedAutomationKeys: text(),
+    browser: text(),
     createdAt: integer().notNull(),
     imported: integer({ mode: "boolean" }).notNull().default(false),
     complete: integer({ mode: "boolean" }).notNull().default(false),
@@ -139,6 +141,7 @@ export const executions = sqliteTable(
       .references(() => runs.id),
     planItemId: text().references(() => planItems.id),
     title: text().notNull(),
+    automationKey: text(),
     externalKey: text(),
     projectName: text(),
     browser: text().notNull(),
@@ -209,6 +212,27 @@ export const mappings = sqliteTable(
   },
   (t) => [uniqueIndex("mapping_key").on(t.projectId, t.externalKey)],
 );
+export const automationSources = sqliteTable(
+  "automation_sources",
+  {
+    id: text().primaryKey(),
+    projectId: text()
+      .notNull()
+      .references(() => projects.id),
+    key: text().notNull(),
+    caseId: text()
+      .notNull()
+      .references(() => cases.id),
+    preserveManualSteps: integer({ mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: integer().notNull(),
+  },
+  (t) => [
+    uniqueIndex("automation_source_project_key").on(t.projectId, t.key),
+    uniqueIndex("automation_source_case").on(t.caseId),
+  ],
+);
 export const imports = sqliteTable(
   "imports",
   {
@@ -242,6 +266,8 @@ export const tokens = sqliteTable("tokens", {
   id: text().primaryKey(),
   name: text().notNull(),
   hash: text().notNull(),
+  planId: text().references(() => plans.id),
+  scope: text().notNull().default("upload"),
   createdAt: integer().notNull(),
 });
 export const audit = sqliteTable("audit", {
