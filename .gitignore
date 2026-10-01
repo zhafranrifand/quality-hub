@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+data/
+test-results/
+lokasi-results/
+playwright-report/
+*.sqlite*
+*.zip
