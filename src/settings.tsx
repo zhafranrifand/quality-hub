@@ -23,13 +23,20 @@ import type {
   StoredAutomationToken,
 } from "./types";
 
-export function SettingsPage() {
+export function SettingsPage({
+  projectId,
+  projectName,
+  refreshProject,
+}: {
+  projectId: string;
+  projectName: string;
+  refreshProject: () => Promise<void>;
+}) {
   const [settings, setSettings] = useState<any>(null),
     [plans, setPlans] = useState<AutomationPlanOption[]>([]),
     [name, setName] = useState(""),
     [scope, setScope] = useState<AutomationTokenScope>("edit"),
     [planId, setPlanId] = useState(""),
-    [syncPlanId, setSyncPlanId] = useState(""),
     [syncResult, setSyncResult] = useState<any>(null),
     [token, setToken] = useState("");
   const { task, error, busy } = useTask();
@@ -40,7 +47,6 @@ export function SettingsPage() {
     ]);
     setSettings(currentSettings);
     setPlans(availablePlans);
-    setSyncPlanId((current) => current || availablePlans[0]?.id || "");
   }
   useEffect(() => {
     void task(refresh);
@@ -96,7 +102,7 @@ export function SettingsPage() {
       </div>
       <Panel
         title="Automation tokens"
-        description="Create one of two plan-bound API tokens. Read-only tokens can view the selected plan's project data. Edit tokens can sync automation drafts, create automated runs, and submit results and evidence. Neither can approve cases, change frozen plan scope, access settings, or download backups."
+        description="Create one of two plan-bound API tokens. Read-only tokens can view the selected plan's project data. Edit tokens can sync automation drafts into that project's case library, create automated runs, and submit results and evidence for their plan. Neither can approve cases, change frozen plan scope, access settings, or download backups."
         action={<KeyRound size={20} />}
       >
         <Form
@@ -153,12 +159,12 @@ export function SettingsPage() {
         </Form>
         <p className="muted">
           Read-only access is limited to the project associated with the
-          selected plan. Edit tokens can sync scenarios as drafts, create
-          automated runs, and upload reports and screenshots within that plan.
-          A changed scenario creates a revision and does not rewrite frozen plan
-          versions. Tokens cannot approve cases, alter frozen plan scope, read
-          settings, or download backups. The secret is shown once and is never
-          displayed again.
+          selected plan. Edit tokens can sync scenarios as drafts into that
+          project's case library; automated runs, reports, and screenshots are
+          scoped to the selected plan. A changed scenario creates a revision
+          and does not rewrite frozen plan versions. Tokens cannot approve
+          cases, alter frozen plan scope, read settings, or download backups.
+          The secret is shown once and is never displayed again.
         </p>
         {token && (
           <div className="token-reveal">
@@ -213,31 +219,21 @@ export function SettingsPage() {
           <>
             <p>
               Read-only source connection. This fetches the latest tagged Gherkin
-              scenarios and syncs them into the selected plan's project; it does
+              scenarios and syncs them into the selected project; it does
               not run Playwright tests.
             </p>
-            <Field label="Target plan">
-              <select
-                value={syncPlanId}
-                onChange={(event) => setSyncPlanId(event.target.value)}
-              >
-                <option value="">Select a plan</option>
-                {plans.map((plan) => (
-                  <option value={plan.id} key={plan.id}>
-                    {plan.projectName} / {plan.releaseName} / {plan.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
+            <p className="muted">
+              Destination project: <strong>{projectName || "None selected"}</strong>
+            </p>
             <button
               className="primary"
-              disabled={busy || !syncPlanId}
+              disabled={busy || !projectId}
               onClick={() =>
                 void task(async () => {
                   setSyncResult(null);
                   const manifest = await api("/integrations/github/manifest");
                   const result = await api(
-                    `/plans/${syncPlanId}/automation/sync`,
+                    `/projects/${projectId}/automation/sync`,
                     "POST",
                     {
                       browser: manifest.browser,
@@ -245,6 +241,7 @@ export function SettingsPage() {
                     },
                   );
                   setSyncResult({ manifest, result });
+                  await refreshProject();
                 })
               }
             >
@@ -262,9 +259,11 @@ export function SettingsPage() {
                   commit {syncResult.manifest.commitSha.slice(0, 7)}.
                 </strong>
                 <p>
-                  {syncResult.result.ready
-                    ? "All scenarios are approved and present in this plan."
-                    : "Review any draft cases and update the frozen plan before running automation."}
+                  {syncResult.result.scenarios.some(
+                    (scenario: { status: string }) => scenario.status === "draft",
+                  )
+                    ? "New or changed scenarios are drafts. Review and approve them before adding them to a plan."
+                    : "All scenarios are already up to date; no drafts need review."}
                 </p>
               </div>
             )}

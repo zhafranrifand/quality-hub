@@ -3,10 +3,10 @@ import request from "supertest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createApp } from "../server/app";
-import { hashPassword } from "../server/auth";
-import { caseInput } from "../shared/contracts";
-import { content } from "./fixtures";
+import { createApp } from "../../../server/app";
+import { hashPassword } from "../../../server/auth";
+import { caseInput } from "../../../shared/contracts";
+import { content } from "../fixtures";
 
 const origin = "http://localhost:3000";
 const password = "Case-execution-mode-test-password-123";

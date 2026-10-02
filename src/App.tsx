@@ -269,7 +269,11 @@ export default function App() {
           </div>
           <ErrorMessage error={error} />
           {page === "Settings" ? (
-            <SettingsPage />
+            <SettingsPage
+              projectId={projectId}
+              projectName={projects.find((project) => project.id === projectId)?.name || ""}
+              refreshProject={refresh}
+            />
           ) : !projects.length ? (
             <Empty title="Your first quality workspace">
               Create a project to begin managing test cases and releases.

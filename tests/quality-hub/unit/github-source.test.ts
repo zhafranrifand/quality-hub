@@ -3,7 +3,7 @@ import {
   GithubSourceError,
   loadGithubManifest,
   type GithubSourceConfig,
-} from "../server/github-source";
+} from "../../../server/github-source";
 
 const source: GithubSourceConfig = {
   repository: "zhafranrifand/quality-hub",
