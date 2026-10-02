@@ -15,6 +15,12 @@ Feature: LOKASI Intelligence workflows
     And I enter a reserved example email address
     Then Continue is enabled
 
+  @qh_key_lokasi_auth_invalid_email_continue @authentication
+  Scenario: Continue is disabled after entering a malformed email
+    When I open the LOKASI sign-in page
+    And I enter a malformed email address
+    Then Continue is disabled
+
   @qh_key_lokasi_auth_phone_layout @TC-8EAA122C @responsive
   Scenario: Sign-in entry point works on a phone-sized screen
     When I open the sign-in page on a 390 pixel viewport
