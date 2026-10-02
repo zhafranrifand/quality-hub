@@ -4,8 +4,8 @@ import {
   caseExecutionMode,
   executionModeCompatible,
   versionChanges,
-} from "../src/case-domain";
-import type { Case, CaseContent } from "../src/types";
+} from "../../../src/case-domain";
+import type { Case, CaseContent } from "../../../src/types";
 
 const testCase = (executionMode?: CaseContent["executionMode"]) =>
   ({ executionMode }) as Case;

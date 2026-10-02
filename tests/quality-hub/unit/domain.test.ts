@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { evaluateGate, type GateRow } from "../shared/contracts";
-import { parseReport } from "../server/playwright";
-import { report } from "./fixtures";
+import { evaluateGate, type GateRow } from "../../../shared/contracts";
+import { parseReport } from "../../../server/playwright";
+import { report } from "../fixtures";
 const row = (status: GateRow["status"] = "passed", flaky = false): GateRow => ({
   id: "i",
   caseId: "c",

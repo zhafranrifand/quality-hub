@@ -63,6 +63,10 @@ export type AppConfig = {
 export function createApp(config: AppConfig) {
   const db = openStore(config.dataDir),
     app = express();
+  const automationSourcesHasBrowser = (
+    db.sqlite.pragma("table_info(automation_sources)") as { name: string }[]
+  )
+    .some((column: { name: string }) => column.name === "browser");
   const origin = config.publicOrigin || "http://localhost:3000";
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -241,6 +245,9 @@ export function createApp(config: AppConfig) {
       const automationSync = req.path.match(
         /^\/plans\/([^/]+)\/automation\/sync$/,
       );
+      const projectAutomationSync = req.path.match(
+        /^\/projects\/([^/]+)\/automation\/sync$/,
+      );
       const automationPreflight = req.path.match(
         /^\/plans\/([^/]+)\/automation\/preflight$/,
       );
@@ -260,6 +267,11 @@ export function createApp(config: AppConfig) {
         req.method === "POST" &&
         !!scopedPlanId &&
         automationSync?.[1] === scopedPlanId;
+      const canSyncProjectAutomation =
+        ["edit", "automation_sync"].includes(tokenScope) &&
+        req.method === "POST" &&
+        !!scopedProject &&
+        projectAutomationSync?.[1] === scopedProject.projectId;
       const canPreflightAutomation =
         ["edit", "runner"].includes(tokenScope) &&
         req.method === "POST" &&
@@ -289,6 +301,7 @@ export function createApp(config: AppConfig) {
         !canRead &&
         !canCreateRun &&
         !canSyncAutomation &&
+        !canSyncProjectAutomation &&
         !canPreflightAutomation &&
         !canImportReport &&
         !canUploadEvidence
@@ -503,21 +516,10 @@ export function createApp(config: AppConfig) {
           ),
     ),
   );
-  api.post("/plans/:id/automation/sync", (req, res) => {
-    const planId = param(req),
-      plan = db.one(
-        `SELECT rel.projectId FROM plans p
-         JOIN releases rel ON rel.id=p.releaseId WHERE p.id=?`,
-        planId,
-      );
-    if (!plan) fail(404, "Plan not found");
-    if (
-      res.locals.uploadToken &&
-      (!["automation_sync", "edit"].includes(res.locals.tokenScope) ||
-        res.locals.uploadTokenPlanId !== planId)
-    )
-      fail(403, "Use an Edit token bound to this plan");
-    const body = automationSyncRequestSchema.parse(req.body);
+  const syncAutomationScenarios = (
+    projectId: string,
+    body: z.infer<typeof automationSyncRequestSchema>,
+  ) => {
     const normalizedScenarios = body.scenarios.map((scenario) => ({
       ...scenario,
       tags: [...new Set(scenario.tags)].sort(),
@@ -528,7 +530,7 @@ export function createApp(config: AppConfig) {
         for (const scenario of normalizedScenarios) {
           let source = db.one(
             "SELECT * FROM automation_sources WHERE projectId=? AND key=?",
-            plan.projectId,
+            projectId,
             scenario.key,
           );
           let testCase: any;
@@ -537,7 +539,7 @@ export function createApp(config: AppConfig) {
             testCase = db.one(
               "SELECT * FROM cases WHERE id=? AND projectId=?",
               source.caseId,
-              plan.projectId,
+              projectId,
             );
             if (testCase.status === "deprecated")
               fail(
@@ -554,7 +556,7 @@ export function createApp(config: AppConfig) {
               testCase = db.one(
                 "SELECT * FROM cases WHERE id=? COLLATE NOCASE AND projectId=?",
                 scenario.legacyCaseId,
-                plan.projectId,
+                projectId,
               );
               if (!testCase)
                 fail(
@@ -572,22 +574,40 @@ export function createApp(config: AppConfig) {
             } else {
               testCase = {
                 id: `TC-${id().slice(0, 8).toUpperCase()}`,
-                projectId: plan.projectId,
+                projectId,
                 status: "draft",
                 createdAt: Date.now(),
               };
               db.insert(t.cases, testCase);
               created = true;
             }
-            db.insert(t.automationSources, {
-              id: id(),
-              projectId: plan.projectId,
-              key: scenario.key,
-              browser: body.browser,
-              caseId: testCase.id,
-              preserveManualSteps: !!scenario.legacyCaseId,
-              createdAt: Date.now(),
-            });
+            const sourceId = id();
+            const createdAt = Date.now();
+            if (automationSourcesHasBrowser) {
+              db.insert(t.automationSources, {
+                id: sourceId,
+                projectId,
+                key: scenario.key,
+                browser: body.browser,
+                caseId: testCase.id,
+                preserveManualSteps: !!scenario.legacyCaseId,
+                createdAt,
+              });
+            } else {
+              // Some older local databases already have the current mapping
+              // shape without this legacy, unused column.
+              db.run(
+                `INSERT INTO automation_sources
+                   (id,projectId,key,caseId,preserveManualSteps,createdAt)
+                 VALUES (?,?,?,?,?,?)`,
+                sourceId,
+                projectId,
+                scenario.key,
+                testCase.id,
+                Number(!!scenario.legacyCaseId),
+                createdAt,
+              );
+            }
             source = {
               caseId: testCase.id,
               preserveManualSteps: !!scenario.legacyCaseId,
@@ -653,6 +673,47 @@ export function createApp(config: AppConfig) {
         }
       })
       .immediate();
+
+    return body.scenarios.map((scenario) => {
+      const synced = db.one(
+        `SELECT s.caseId,c.status FROM automation_sources s
+         JOIN cases c ON c.id=s.caseId
+         WHERE s.projectId=? AND s.key=?`,
+        projectId,
+        scenario.key,
+      );
+      return {
+        key: scenario.key,
+        caseId: synced?.caseId || null,
+        status: synced?.status || "missing",
+      };
+    });
+  };
+
+  api.post("/projects/:id/automation/sync", (req, res) => {
+    const projectId = param(req);
+    must("projects", projectId);
+    const body = automationSyncRequestSchema.parse(req.body);
+    const scenarios = syncAutomationScenarios(projectId, body);
+    res.json({ projectId, browser: body.browser, scenarios });
+  });
+
+  api.post("/plans/:id/automation/sync", (req, res) => {
+    const planId = param(req),
+      plan = db.one(
+        `SELECT rel.projectId FROM plans p
+         JOIN releases rel ON rel.id=p.releaseId WHERE p.id=?`,
+        planId,
+      );
+    if (!plan) fail(404, "Plan not found");
+    if (
+      res.locals.uploadToken &&
+      (!["automation_sync", "edit"].includes(res.locals.tokenScope) ||
+        res.locals.uploadTokenPlanId !== planId)
+    )
+      fail(403, "Use an Edit token bound to this plan");
+    const body = automationSyncRequestSchema.parse(req.body);
+    syncAutomationScenarios(plan.projectId, body);
 
     const scenarioResults = body.scenarios.map((scenario) =>
       automationAssessment(planId, plan.projectId, scenario.key, body.browser),

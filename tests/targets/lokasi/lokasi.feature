@@ -9,6 +9,18 @@ Feature: LOKASI Intelligence workflows
     When I open the LOKASI sign-in page
     Then Continue is disabled and password recovery is available
 
+  @qh_key_lokasi_auth_valid_email_continue @authentication
+  Scenario: Continue is enabled after entering a valid email
+    When I open the LOKASI sign-in page
+    And I enter a reserved example email address
+    Then Continue is enabled
+
+  @qh_key_lokasi_auth_invalid_email_continue @authentication
+  Scenario: Continue is disabled after entering a malformed email
+    When I open the LOKASI sign-in page
+    And I enter a malformed email address
+    Then Continue is disabled
+
   @qh_key_lokasi_auth_phone_layout @TC-8EAA122C @responsive
   Scenario: Sign-in entry point works on a phone-sized screen
     When I open the sign-in page on a 390 pixel viewport

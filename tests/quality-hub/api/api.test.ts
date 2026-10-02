@@ -5,11 +5,11 @@ import { resolve, join } from "node:path";
 import sharp from "sharp";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import { createApp } from "../server/app";
-import { hashPassword } from "../server/auth";
-import { createBackup } from "../server/storage";
-import { restoreBackup } from "../scripts/restore";
-import { content, report } from "./fixtures";
+import { createApp } from "../../../server/app";
+import { hashPassword } from "../../../server/auth";
+import { createBackup } from "../../../server/storage";
+import { restoreBackup } from "../../../scripts/restore";
+import { content, report } from "../fixtures";
 const password = "Harness-private-password-123";
 const passwordHash = hashPassword(password);
 const origin = "http://localhost:3000";
@@ -322,6 +322,16 @@ describe("private workspace API", () => {
       syncToken,
     ).expect(200);
     expect(syncResponse.body.scenarios[0].status).toBe("draft");
+    await request(app.app)
+      .post(`/api/v1/projects/${first.project.id}/automation/sync`)
+      .set("Authorization", `Bearer ${syncToken}`)
+      .send({ browser: "chromium", scenarios: [automationScenario(key)] })
+      .expect(200);
+    await request(app.app)
+      .post(`/api/v1/projects/${second.project.id}/automation/sync`)
+      .set("Authorization", `Bearer ${syncToken}`)
+      .send({ browser: "chromium", scenarios: [automationScenario(key)] })
+      .expect(403);
 
     await request(app.app)
       .post(`/api/v1/plans/${first.plan.id}/runs`)
@@ -495,6 +505,36 @@ describe("private workspace API", () => {
         .content,
     ).toBe(oldVersionContent);
     expect(app.db.one("SELECT approved FROM versions WHERE id=?", firstCase.versionId).approved).toBe(1);
+  });
+  it("syncs tagged scenarios directly into a project without requiring a plan", async () => {
+    const project = (
+      await mutation("post", "/projects")
+        .send({ name: "Project-level sync" })
+        .expect(201)
+    ).body;
+
+    const response = await mutation(
+      "post",
+      `/projects/${project.id}/automation/sync`,
+    )
+      .send({
+        browser: "chromium",
+        scenarios: [automationScenario("project_level_sync")],
+      })
+      .expect(200);
+
+    expect(response.body.projectId).toBe(project.id);
+    expect(response.body.scenarios).toEqual([
+      expect.objectContaining({ key: "project_level_sync", status: "draft" }),
+    ]);
+    const state = await get(`/projects/${project.id}/state`);
+    expect(state.cases).toEqual([
+      expect.objectContaining({
+        id: response.body.scenarios[0].caseId,
+        title: "Email validation is enforced",
+        status: "draft",
+      }),
+    ]);
   });
   it("keeps missing, unkeyed, and unexpected Playwright results incomplete and unmatched", async () => {
     const base = await setup();

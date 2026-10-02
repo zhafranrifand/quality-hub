@@ -6,7 +6,7 @@ mkdirSync(resolve("../../work/harness"), { recursive: true });
 const dataDir =
   process.env.E2E_DATA_DIR || mkdtempSync(resolve("../../work/harness/e2e-"));
 export default defineConfig({
-  testDir: "./tests/e2e",
+  testDir: "./tests/quality-hub/e2e",
   fullyParallel: false,
   workers: 1,
   timeout: 90000,

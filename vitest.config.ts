@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/quality-hub/**/*.test.ts"],
     fileParallelism: false,
     testTimeout: 20000,
   },

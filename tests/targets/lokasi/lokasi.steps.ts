@@ -64,6 +64,24 @@ async function finishOnboarding(page: Page) {
 
 When("I open the LOKASI sign-in page", async ({ page }) => openLogin(page));
 
+When("I enter a reserved example email address", async ({ page }) => {
+  await page
+    .getByRole("textbox", { name: "Email Address" })
+    .fill("quality-hub-sync@example.invalid");
+});
+
+When("I enter a malformed email address", async ({ page }) => {
+  await page.getByRole("textbox", { name: "Email Address" }).fill("invalid-email");
+});
+
+Then("Continue is enabled", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
+});
+
+Then("Continue is disabled", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
+});
+
 Then("the email entry and Continue button are visible", async ({ page }) => {
   await expect(
     page.getByRole("textbox", { name: "Email Address" }),

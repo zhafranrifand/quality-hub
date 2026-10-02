@@ -3,7 +3,7 @@ import {
   hashGherkinManifestEntry,
   parseGherkinManifest,
   type GherkinManifestInput,
-} from "../scripts/gherkin-manifest";
+} from "../../../scripts/gherkin-manifest";
 
 const feature = (
   relativePath: string,
