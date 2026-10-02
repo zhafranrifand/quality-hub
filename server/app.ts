@@ -63,6 +63,10 @@ export type AppConfig = {
 export function createApp(config: AppConfig) {
   const db = openStore(config.dataDir),
     app = express();
+  const automationSourcesHasBrowser = (
+    db.sqlite.pragma("table_info(automation_sources)") as { name: string }[]
+  )
+    .some((column: { name: string }) => column.name === "browser");
   const origin = config.publicOrigin || "http://localhost:3000";
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -579,15 +583,33 @@ export function createApp(config: AppConfig) {
               db.insert(t.cases, testCase);
               created = true;
             }
-            db.insert(t.automationSources, {
-              id: id(),
-              projectId: plan.projectId,
-              key: scenario.key,
-              browser: body.browser,
-              caseId: testCase.id,
-              preserveManualSteps: !!scenario.legacyCaseId,
-              createdAt: Date.now(),
-            });
+            const sourceId = id();
+            const createdAt = Date.now();
+            if (automationSourcesHasBrowser) {
+              db.insert(t.automationSources, {
+                id: sourceId,
+                projectId: plan.projectId,
+                key: scenario.key,
+                browser: body.browser,
+                caseId: testCase.id,
+                preserveManualSteps: !!scenario.legacyCaseId,
+                createdAt,
+              });
+            } else {
+              // Some older local databases already have the current mapping
+              // shape without this legacy, unused column.
+              db.run(
+                `INSERT INTO automation_sources
+                   (id,projectId,key,caseId,preserveManualSteps,createdAt)
+                 VALUES (?,?,?,?,?,?)`,
+                sourceId,
+                plan.projectId,
+                scenario.key,
+                testCase.id,
+                Number(!!scenario.legacyCaseId),
+                createdAt,
+              );
+            }
             source = {
               caseId: testCase.id,
               preserveManualSteps: !!scenario.legacyCaseId,
